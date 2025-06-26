@@ -18,6 +18,11 @@ pub enum KilnCommand {
         /// Name of the new project
         name: String,
     },
+    
+    /// Import a project from a .kiln file
+    Import {
+        filename: String,
+    },
 
     /// Operate on an existing project
     /// Operate on an existing project

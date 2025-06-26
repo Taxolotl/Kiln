@@ -1,6 +1,7 @@
 mod args;
 mod config;
 mod modpack_config;
+mod modpack_file;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,9 +10,11 @@ use rfd::AsyncFileDialog;
 use tokio::fs::{create_dir_all, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vintagestory_mod_db_api::VintageStoryModDbApi;
+use zstd::decode_all;
 use crate::args::{KilnArgs, KilnCommand, ProjectCommand};
 use crate::config::KilnConfig;
 use crate::modpack_config::ModpackConfig;
+use crate::modpack_file::{KilnFile, KilnMod};
 
 #[tokio::main]
 async fn main() {
@@ -65,14 +68,50 @@ async fn main() {
 
 			println!("Successfully created modpack {name}");
 		}
+		KilnCommand::Import { filename } => {
+			let compressed = std::fs::File::open(&filename).expect("Could not open the compressed file!");
+			let decomp = decode_all(compressed).expect("Could not decode compressed file!");
+			let info: KilnFile = rmp_serde::decode::from_slice(decomp.as_slice()).expect("Could not decode compressed file!");
+			
+			let vs_mod_api = VintageStoryModDbApi::new(false);
+			
+			let location = get_mods_dir().join(&info.name);
+			
+			create_dir_all(&location.join("Mods")).await.expect("Could not create the modpack directory!");
+
+			let mut config = ModpackConfig::default();
+			config.name = info.name;
+			
+			// TODO: Make this download all async
+			for mod_info in info.mods {
+				match mod_info {
+					KilnMod::ModDbMod { id, version } => {
+						download_mod_with_version(&vs_mod_api, id.to_string(), version, &location).await.expect("Failed to download mod");
+					}
+					KilnMod::OtherMod { name, source } => {
+						let resp = reqwest::get(&source).await.expect("Failed to download mod");
+						let binding = resp.bytes().await?;
+						let contents = binding.as_ref();
+						let mut out = File::create(&location.join(format!("{name}.zip"))).await?;
+						out.write_all(&contents).await?;
+					}
+				}
+			}
+			
+			config.mods = info.mods;
+
+			let contents = serde_json::ser::to_string(&config).expect("Could not serialize the modpack config!");
+			let mut file = File::create(&location.join("kiln.json")).await.expect("Could not create the modpack config!");
+			file.write_all(contents.as_bytes()).await.expect("Could not write to the modpack config!");
+		},
 		KilnCommand::Project(project_command) => {
 			match project_command {
 				ProjectCommand::Add { name, id } => {
 					check_modpack(&name);
 					let mod_api = VintageStoryModDbApi::new(false);
-					let filename = download_mod(&mod_api, &id, get_mods_dir().join(&name).join("Mods")).await.expect("Could not download a mod!");
+					let version = download_mod(&mod_api, &id, get_mods_dir().join(&name).join("Mods")).await.expect("Could not download a mod!");
 					let mut config = read_modpack_config(&name).await.expect("Could not read the modpack config!");
-					config.mods.insert(id.clone(), filename);
+					config.mods.push(KilnMod::ModDbMod { id: id.clone(), version });
 					write_modpack_config(name, config).await.expect("Could not write the modpack config!");
 					println!("Successfully added mod with id/alias {id}");
 				}
@@ -80,7 +119,23 @@ async fn main() {
 					check_modpack(&name);
 
 					let mut config = read_modpack_config(&name).await.expect("Could not read the modpack config!");
-					config.mods.remove(&id);
+					let filtered = config.mods.iter().filter(|kiln_mod: KilnMod| match kiln_mod {
+						KilnMod::ModDbMod { id, .. } => {
+							id == id
+						}
+						KilnMod::OtherMod { name, .. } => {
+							name == id
+						}
+					}).collect::<Vec<_>>();
+					if filtered.is_empty() {
+						eprintln!("No id found for {id}");
+						return;
+					}
+					if filtered.len() > 1 {
+						eprintln!("More than one mod found with id {id}, exiting");
+						return;
+					}
+					config.mods.remove(config.mods.iter().find(filtered[0]).unwrap());
 					write_modpack_config(name, config).await.expect("Could not write the modpack config!");
 				}
 				ProjectCommand::Launch { name } => {
@@ -92,8 +147,20 @@ async fn main() {
 				}
 				ProjectCommand::Export { name } => {
 					check_modpack(name);
-
-					todo!()
+					
+					let mut file = File::open(get_mods_dir().join(&name).join("kiln.json")).await.expect("Could not open the modpack config!");
+					let mut contents = String::new();
+					file.read_to_string(&mut contents).await.expect("Could not read the modpack config!");
+					
+					let info: KilnFile = serde_json::de::from_str(&contents).expect("Could not deserialize the modpack config!");
+					let msg_pack = rmp_serde::encode::to_vec(&info).expect("Could not encode the modpack config!");
+					let compressed = zstd::encode_all(msg_pack, 3).expect("Error compressing the modpack config!");
+					
+					let output_path = Path::new(format!("{name}.kiln"));
+					let mut file = File::create(output_path).await.expect("Could not create the modpack config!");
+					file.write_all(&compressed[..]).await.expect("Could not write to the modpack config!");
+					
+					println!("Successfully exported to {}", output_path.display());
 				}
 			}
 		}
@@ -259,7 +326,32 @@ async fn download_mod(mod_api: &VintageStoryModDbApi, mod_id: impl AsRef<str>, l
 	let mut out = File::create(&file_location).await?;
 	out.write_all(&contents).await?;
 
-	Ok(release.filename)
+	Ok(release.mod_version)
+}
+
+async fn download_mod_with_version(vintage_story_mod_db_api: &VintageStoryModDbApi, mod_id: impl AsRef<str>, version: impl AsRef<str>, location: impl AsRef<Path>) -> anyhow::Result<String> {
+	let mod_info = vintage_story_mod_db_api.get_mod_from_alias(mod_id).await?;
+	let mod_name = mod_info.name.clone().as_str();
+	println!("Downloading {mod_name} for version {version}");
+	let mut releases = mod_info.releases;
+	releases.retain(|release_info| release_info.mod_version == version.as_ref());
+	if releases.is_empty() {
+		return Err(anyhow::anyhow!("No version {version} found for {mod_name}"))
+	}
+	if releases.len() > 1 {
+		println!("Multiple releases found for {mod_name} with version {version}, using first found");
+	}
+	
+	let release = releases[0].clone();
+	let file_location = location.as_ref().join(&release.filename);
+	
+	let resp = reqwest::get(&release.main_file).await?;
+	let binding = resp.bytes().await?;
+	let contents = binding.as_ref();
+	let mut out = File::create(&file_location).await?;
+	out.write_all(&contents).await?;
+	
+	Ok(file_location.display().to_string())
 }
 
 fn get_data_dir() -> PathBuf {
