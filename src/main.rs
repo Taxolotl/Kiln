@@ -89,11 +89,7 @@ async fn main() {
 						download_mod_with_version(&vs_mod_api, id.to_string(), version, &location).await.expect("Failed to download mod");
 					}
 					KilnMod::OtherMod { name, source } => {
-						let resp = reqwest::get(&source).await.expect("Failed to download mod");
-						let binding = resp.bytes().await?;
-						let contents = binding.as_ref();
-						let mut out = File::create(&location.join(format!("{name}.zip"))).await?;
-						out.write_all(&contents).await?;
+						download_file_to(&source, &location.join(format!("{name}.zip"))).await.expect("Failed to download file");
 					}
 				}
 			}
@@ -320,15 +316,12 @@ async fn download_mod(mod_api: &VintageStoryModDbApi, mod_id: impl AsRef<str>, l
 
 	println!("Downloading {} to {}", release.mod_id_str.unwrap_or("<No mod id provided in release>".to_string()), file_location.display());
 
-	let resp = reqwest::get(&release.main_file).await?;
-	let binding = resp.bytes().await?;
-	let contents = binding.as_ref();
-	let mut out = File::create(&file_location).await?;
-	out.write_all(&contents).await?;
+	download_file_to(&release.main_file, &file_location).await?;
 
 	Ok(release.mod_version)
 }
 
+// TODO: move the getting specific version to vintagestory_mod_db_api
 async fn download_mod_with_version(vintage_story_mod_db_api: &VintageStoryModDbApi, mod_id: impl AsRef<str>, version: impl AsRef<str>, location: impl AsRef<Path>) -> anyhow::Result<String> {
 	let mod_info = vintage_story_mod_db_api.get_mod_from_alias(mod_id).await?;
 	let mod_name = mod_info.name.clone().as_str();
@@ -345,13 +338,18 @@ async fn download_mod_with_version(vintage_story_mod_db_api: &VintageStoryModDbA
 	let release = releases[0].clone();
 	let file_location = location.as_ref().join(&release.filename);
 	
-	let resp = reqwest::get(&release.main_file).await?;
-	let binding = resp.bytes().await?;
-	let contents = binding.as_ref();
-	let mut out = File::create(&file_location).await?;
-	out.write_all(&contents).await?;
+	download_file_to(&release.main_file, &file_location).await?;
 	
 	Ok(file_location.display().to_string())
+}
+
+async fn download_file_to(server_location: impl reqwest::IntoUrl, to: impl AsRef<Path>) -> anyhow::Result<()> {
+	let resp = reqwest::get(server_location).await?;
+	let binding = resp.bytes().await?;
+	let contents = binding.as_ref();
+	let mut file = File::create(&to).await?;
+	file.write_all(contents).await?;
+	Ok(())
 }
 
 fn get_data_dir() -> PathBuf {

@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "kiln")]
-#[command(about = "A CLI tool", version = "1.0")]
+#[command(about = "A CLI tool for managing Vintage Story modpacks", version, about, help)]
 pub struct KilnArgs {
     #[command(subcommand)]
     pub command: KilnCommand,
@@ -10,7 +10,7 @@ pub struct KilnArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum KilnCommand {
-    /// Initialize a project in the current directory
+    /// Set up the kiln configs
     Setup,
 
     /// Add a new project by name
@@ -23,8 +23,13 @@ pub enum KilnCommand {
     Import {
         filename: String,
     },
+    
+    /*
+    TODO: 
+    /// Clone the current Vintagestory data dir as a modpack
+    Clone,
+    */
 
-    /// Operate on an existing project
     /// Operate on an existing project
     #[command(flatten)]
     Project(ProjectCommand),
