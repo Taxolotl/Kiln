@@ -26,11 +26,12 @@ pub enum KilnCommand {
     /// Import a project from a .kiln file
     Import { filename: String },
 
-    /*
-    TODO:
     /// Clone the current Vintagestory data dir as a modpack
     Clone,
-    */
+
+    /// List all modpacks in the current system
+    List,
+
     /// Operate on an existing project
     #[command(flatten)]
     Project(ProjectCommand),
@@ -45,8 +46,12 @@ pub enum ProjectCommand {
     Remove { name: String, id: String },
 
     /// Launch a project
+    #[clap(aliases = &["launch", "start"])]
     Run { name: String },
 
     /// Export a project
     Export { name: String },
+
+    /// List currently installed mods in a project
+    Mods { name: String },
 }

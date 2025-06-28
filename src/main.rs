@@ -58,6 +58,23 @@ async fn main() {
                 eprintln!("No file selected for the vintage story binary, try running again");
             }
         }
+        KilnCommand::Clone => {
+            todo!()
+        }
+        KilnCommand::List => {
+            let project_folders = get_mods_dir()
+                .read_dir()
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|f| f.path().is_dir())
+                .filter(|f| f.path().join("kiln.json").exists())
+                .map(|f| f.file_name())
+                .collect::<Vec<_>>();
+
+            for project in project_folders {
+                println!("{}", project.display());
+            }
+        }
         KilnCommand::New { name } => {
             let path = get_mods_dir().join(&name);
             if path.exists() {
@@ -265,6 +282,12 @@ async fn main() {
 
                 println!("Successfully exported to {}", output_path.display());
             }
+            ProjectCommand::Mods { name } => {
+                let config = read_modpack_config(name)
+                    .await
+                    .expect("Could not read the modpack config!");
+                println!("{:#?}", config.mods);
+            }
         },
     }
 }
@@ -290,34 +313,15 @@ async fn download_mod(
     Ok(release.mod_version)
 }
 
-// TODO: move the getting specific version to vintagestory_mod_db_api
 async fn download_mod_with_version(
     vintage_story_mod_db_api: &VintageStoryModDbApi,
     mod_id: impl AsRef<str>,
     version: impl AsRef<str>,
     location: impl AsRef<Path>,
 ) -> anyhow::Result<String> {
-    let mod_info = vintage_story_mod_db_api.get_mod_from_alias(mod_id).await?;
-    let mod_name = mod_info.name.clone();
-    println!("Downloading {} for version {}", mod_name, version.as_ref());
-    let mut releases = mod_info.releases;
-    releases.retain(|release_info| release_info.mod_version == version.as_ref());
-    if releases.is_empty() {
-        return Err(anyhow::anyhow!(
-            "No version {} found for {}",
-            version.as_ref(),
-            mod_name
-        ));
-    }
-    if releases.len() > 1 {
-        println!(
-            "Multiple releases found for {} with version {}, using first found",
-            mod_name,
-            version.as_ref()
-        );
-    }
-
-    let release = releases[0].clone();
+    let release = vintage_story_mod_db_api
+        .get_mod_release_with_version_from_alias(mod_id, version)
+        .await?;
     let file_location = location.as_ref().join(release.get_filename());
 
     download_file_to(&release.main_file, &file_location).await?;
